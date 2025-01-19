@@ -102,7 +102,7 @@ func TestISP_Main(t *testing.T) {
 		panic(err)
 	}
 
-	if err = isp.WriteFile(0x08000000, "E:/JY_F407VE_IAP_V1.0.15.hex", true, func(progress float64) {
+	if err = isp.WriteFile(0x08000000, "E:/JY_F407VE_IAP_V1.0.15.bin", true, func(progress float64) {
 		fmt.Printf("progress:%.2f%%\r\n", progress)
 	}); err != nil {
 		panic(err)

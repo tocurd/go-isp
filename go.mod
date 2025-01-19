@@ -1,4 +1,4 @@
-module isp
+module github.com/tocurd/go-isp
 
 go 1.22.3
 
