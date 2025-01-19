@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 	"errors"
+	"strconv"
 )
 
 func (t *ISP) checkSum(data []byte) byte {
@@ -14,7 +15,7 @@ func (t *ISP) checkSum(data []byte) byte {
 	return result
 }
 func (t *ISP) commandBytes(command Command) []byte {
-	return []byte{byte(command), 0xFF - byte(command)}
+	return []byte{byte(command), 0xFF ^ byte(command)}
 }
 func (t *ISP) bcd2Int(bcd byte) uint8 {
 	return ((bcd / 0x10) * 10) + (bcd % 0x10)
@@ -27,14 +28,16 @@ func (t *ISP) int2BCD(num uint8) byte {
  * @Description: 接收数据
  * @receiver t
  */
-func (t *ISP) receivePack(command Command) ([]byte, error) {
+func (t *ISP) receivePack(command Command, setLen int) ([]byte, error) {
 	timeout := time.After(5 * time.Second)
 	buff := make([]byte, 0)
+	ack := false
 	for {
 		select {
 		case <-timeout:
 			return nil, errors.New("receive timeout")
 		default:
+
 			temp := make([]byte, 100)
 			n, err := t.Port.Read(temp)
 			if err != nil {
@@ -44,29 +47,40 @@ func (t *ISP) receivePack(command Command) ([]byte, error) {
 				continue
 			}
 
-			buff = append(buff, temp[:n]...)
-			for index := 0; index < len(buff); index++ {
+			if n >= 1 {
+				buff = append(buff, temp[:n]...)
+				for index := 0; index < len(buff); index++ {
+					// 接收到包开始
+					if buff[index] == 0x79 && index+1 < len(buff) {
+						ack = true
+						packLen := int(buff[index+1]) + index + 4
 
-				// 接收到包开始
-				if buff[index] == 0x79 && index+1 < len(buff) {
-					packLen := int(buff[index+1]) + index + 4
+						if setLen != 0 {
+							packLen = setLen + 2
+						}
 
-					if command == CommandGetVersion {
-						packLen = 2 + index + 3
-					}
+						if command == CommandGetVersion {
+							packLen = 2 + index + 3
+						}
 
-					// 包长度符合要求
-					if len(buff) >= packLen {
-						pack := buff[index:packLen]
-						if pack[0] == 0x79 && pack[len(pack)-1] == 0x79 {
-							return pack, nil
+						// 包长度符合要求
+						if len(buff) >= packLen {
+							pack := buff[index:packLen]
+							if command == CommandReadMemory {
+								if pack[0] == 0x79 {
+									return pack, nil
+								}
+							}
+							if pack[0] == 0x79 && pack[len(pack)-1] == 0x79 {
+								return pack, nil
+							}
 						}
 					}
-				}
 
-				if buff[index] == 0x1F {
-					buff = buff[index:]
-					return nil, NACKError
+					if buff[index] == 0x1F && ack == false {
+						buff = buff[index:]
+						return nil, NACKError
+					}
 				}
 			}
 		}
@@ -144,12 +158,12 @@ func (t *ISP) command(command Command) ([]byte, error) {
 		case <-timeout:
 			return nil, fmt.Errorf("command 0x%02X timeout", command)
 		default:
-			data := []byte{byte(command), byte(0xFF - command)}
+			data := []byte{byte(command), byte(0xFF ^ command)}
 
 			if _, err := t.Port.Write(data); err != nil {
 				return nil, err
 			}
-			pack, err := t.receivePack(command)
+			pack, err := t.receivePack(command, 0)
 			if err != nil {
 				time.Sleep(100 * time.Millisecond)
 				continue
@@ -157,4 +171,20 @@ func (t *ISP) command(command Command) ([]byte, error) {
 			return pack, nil
 		}
 	}
+}
+
+func (t *ISP) hexCharToBytes(hexStr string) ([]byte, error) {
+	if len(hexStr)%2 != 0 {
+		return nil, fmt.Errorf("hex string length must be even")
+	}
+
+	bytes := make([]byte, len(hexStr)/2)
+	for i := 0; i < len(hexStr); i += 2 {
+		val, err := strconv.ParseUint(hexStr[i:i+2], 16, 8)
+		if err != nil {
+			return nil, err
+		}
+		bytes[i/2] = byte(val)
+	}
+	return bytes, nil
 }

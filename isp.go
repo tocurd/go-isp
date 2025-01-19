@@ -18,6 +18,9 @@ import (
 var NACKError = errors.New("NACK")
 var SupportedVersions = []uint8{0x31}
 
+const WriteBlockSize = 256
+const WriteMaxRetryCount = 5
+
 type ISP struct {
 	Port      serial.Port
 	Supported []Command
@@ -67,6 +70,25 @@ func (t *ISP) Activation() error {
 		return err
 	}
 	if err := t.Port.SetRTS(true); err != nil {
+		return err
+	}
+	return nil
+}
+
+/*
+ * @Description: 重置状态
+ * @receiver t
+ * @return error
+ */
+func (t *ISP) Reset() error {
+	if err := t.Port.SetDTR(false); err != nil {
+		return err
+	}
+	if err := t.Port.SetRTS(true); err != nil {
+		return err
+	}
+	time.Sleep(100 * time.Millisecond)
+	if err := t.Port.SetRTS(false); err != nil {
 		return err
 	}
 	return nil
@@ -134,11 +156,39 @@ func (t *ISP) GetID() (pid uint16, err error) {
 }
 
 /*
+ * @Description: 使能写保护
+ * @return error
+ */
+func (t *ISP) WriteProtect() error {
+	if err := t.ack(t.commandBytes(CommandWriteProtect), true, 5*time.Second); err != nil {
+		return err
+	}
+	if err := t.waitACK(100 * time.Second); err != nil {
+		return err
+	}
+	return nil
+}
+
+/*
+ * @Description: 解除写保护
+ * @return error
+ */
+func (t *ISP) WriteUnProtect() error {
+	if err := t.ack(t.commandBytes(CommandWriteUnProtect), true, 5*time.Second); err != nil {
+		return err
+	}
+	if err := t.waitACK(100 * time.Second); err != nil {
+		return err
+	}
+	return nil
+}
+
+/*
  * @Description: 使能读保护
  * @return error
  */
 func (t *ISP) ReadoutProtect() error {
-	if err := t.ack(t.commandBytes(CommandReadoutProtect), true, 60*time.Second); err != nil {
+	if err := t.ack(t.commandBytes(CommandReadoutProtect), true, 5*time.Second); err != nil {
 		return err
 	}
 	if err := t.waitACK(100 * time.Second); err != nil {
@@ -165,7 +215,22 @@ func (t *ISP) ReadoutUnprotect() error {
  * @Description:使用双字节寻址模式擦除一个到全部 Flash 页面（仅用于v3.0 usart 自举程序版本及以上版本）。
  * @receiver t
  */
-func (t *ISP) ExtendedEraseMemory() error {
+func (t *ISP) EraseMemoryAll() error {
+	if err := t.ack(t.commandBytes(CommandErase), false, 5*time.Second)
+		err != nil {
+		return err
+	}
+	if err := t.ack(t.commandBytes(0xFF), false, time.Minute); err != nil {
+		return err
+	}
+	return nil
+}
+
+/*
+ * @Description:使用双字节寻址模式擦除一个到全部 Flash 页面（仅用于v3.0 usart 自举程序版本及以上版本）。
+ * @receiver t
+ */
+func (t *ISP) ExtendedEraseMemoryAll() error {
 	if err := t.ack(t.commandBytes(CommandExtendedErase), false, 5*time.Second)
 		err != nil {
 		return err
@@ -180,13 +245,44 @@ func (t *ISP) ExtendedEraseMemory() error {
 }
 
 /*
+ * @Description: 从 RAM、Flash 和信息块中读取数据
+ * @param addr 数据地址
+ * @param size 读取尺寸
+ * @return data 数据
+ * @return err
+ */
+func (t *ISP) ReadMemory(addr uint64, size int) (data []byte, err error) {
+
+	dataSize := size - 1
+	if err = t.ack(t.commandBytes(CommandReadMemory), false, 5*time.Second); err != nil {
+		return nil, err
+	}
+
+	temp := []byte{byte((addr >> 24) & 0xff), byte((addr >> 16) & 0xff), byte((addr >> 8) & 0xff), byte((addr) & 0xff)}
+	temp = append(temp, t.checkSum(temp))
+	if err = t.ack(temp, false, 5*time.Second); err != nil {
+		return nil, err
+	}
+
+	if err = binary.Write(t.Port, binary.LittleEndian, []byte{byte(dataSize), byte(0xFF ^ dataSize)}); err != nil {
+		return nil, err
+	}
+
+	pack, err := t.receivePack(CommandReadMemory, dataSize)
+	if err != nil {
+		return nil, err
+	}
+	return pack, nil
+}
+
+/*
  * @Description:将数据写入 RAM、Flash 或选项字节区域的任意有效存储器地址
  * @param addr 写入地址
  * @param data 写入数据
  * @return error
  */
-func (t *ISP) WriteMemory(addr uint64, data []byte) error {
-	if err := t.ack([]byte{0x31, 0xCE}, false, 5*time.Second); err != nil {
+func (t *ISP) WriteMemory(addr uint64, data []byte, verify bool) error {
+	if err := t.ack(t.commandBytes(CommandWriteMemory), false, 5*time.Second); err != nil {
 		return err
 	}
 
@@ -215,24 +311,24 @@ func (t *ISP) WriteMemory(addr uint64, data []byte) error {
 	if err := t.waitACK(5 * time.Second); err != nil {
 		return err
 	}
+
+	if verify {
+		memory, err := t.ReadMemory(addr, len(data))
+		if err != nil {
+			return err
+		}
+
+		// 284801205D030008A1010008A3010008
+		// 284801205D030008A1010008A3010008
+		// fmt.Printf("Read: %02X\r\n", memory[1:])
+		// fmt.Printf("Write: %02X\r\n", data)
+
+		if bytes.Equal(data, memory[1:]) == false {
+			return errors.New("verify fail data writing")
+		}
+
+	}
 	return nil
-
-	// :10 0000 00 284801205D030008A1010008A3010008 A1
-	// :10 0020 00 000000000000000000000000CB010008 FC
-	// :10 0150 00 77030008770300087703000877030008 97
-
-	// 0x10 = 16个数据
-	// 0x0150 = 数据地址
-	// 0x00 = 数据类型
-	//        '00'数据记录：用来记录数据，HEX文件的大部分记录都是数据记录；
-	//        '01'文件结束记录：用来标识文件结束，放在文件的最后，标识HEX文件的结尾；
-	//        '02'扩展段地址记录：用来标识扩展段地址的记录；
-	//        '03'开始段地址记录：开始段地址记录；
-	//        '04'扩展线性地址记录：用来标识扩展线性地址的记录；
-	//        '05'开始线性地址记录：开始线性地址记录；
-	// 0x77030008770300087703000877030008 = 数据
-	// 0x97 校验和，公式为：FF前面所有字节的加和取反然后加1，取低八位。
-
 }
 
 /*
@@ -242,8 +338,10 @@ func (t *ISP) WriteMemory(addr uint64, data []byte) error {
  * @return error
  */
 func (t *ISP) WriteFile(addr uint64, path string, verify bool, progress func(float64)) error {
-	const WriteBlockSize = 256
-	const WriteMaxRetryCount = 5
+
+	if WriteBlockSize%4 != 0 {
+		return errors.New("单次写入字节数必须为4的倍数")
+	}
 
 	f, err := os.Open(path)
 	if err != nil {
@@ -259,6 +357,76 @@ func (t *ISP) WriteFile(addr uint64, path string, verify bool, progress func(flo
 	retryCount := 0
 	maxBlockCount := math.Ceil(float64(info.Size()) / float64(WriteBlockSize))
 	currentBlockCount := 0
+
+	if strings.Contains(path, ".hex") {
+		scanner := bufio.NewScanner(f)
+		maxBlockCount = 0
+		for scanner.Scan() {
+			maxBlockCount++
+		}
+		if err = scanner.Err(); err != nil {
+			return err
+		}
+		_, err = f.Seek(0, 0)
+		if err != nil {
+			return err
+		}
+
+		data := make([]byte, WriteBlockSize)
+		reader := bufio.NewReader(f)
+		for {
+			lineStr, err := reader.ReadString('\n')
+			if err != nil {
+				if err == io.EOF {
+					return nil
+				}
+				return err
+			}
+			if len(lineStr) <= 0 || lineStr[0] != ':' {
+				continue
+			}
+
+			line, err := t.hexCharToBytes(strings.ReplaceAll(lineStr[1:], "\r\n", ""))
+			if err != nil {
+				return err
+			}
+
+			if len(line) < 4 {
+				continue
+			}
+
+			progress(float64(currentBlockCount) / maxBlockCount * 100.0)
+			currentBlockCount++
+
+			dataOffset := uint64(line[1])<<8 | uint64(line[2])
+			dataType := line[3]
+			if dataType != 0x00 {
+				continue
+			}
+
+			data = append(data, line[4:len(line)-1]...)
+
+			// fmt.Printf("-----------\r\n")
+			// fmt.Printf("line:%02X\r\n", line)
+			// fmt.Printf("dataType:%02X\r\n", dataType)
+			// fmt.Printf("dataOffset:%02X\r\n", dataOffset)
+			// fmt.Printf("dataLen:%02X\r\n", dataLen)
+			// fmt.Printf("data:%02X\r\n", line[4:len(line)-1])
+			// :10 0000 00 284801205D030008A1010008A3010008A1
+			// :10 0000 00 284801205D030008A1010008A3010008A1
+
+		GoRetry1:
+			if err = t.WriteMemory(addr+dataOffset, line[4:len(line)-1], verify); err != nil {
+				retryCount++
+				if retryCount >= WriteMaxRetryCount {
+					return fmt.Errorf("write addr 0x%02X fail err:%s", 0x08000000+dataOffset, err.Error())
+				}
+				goto GoRetry1
+			}
+
+		}
+	}
+
 	if strings.Contains(path, ".bin") {
 		// 创建一个读取器，每次读取256个字节
 		offset := 0
@@ -275,18 +443,15 @@ func (t *ISP) WriteFile(addr uint64, path string, verify bool, progress func(flo
 			}
 
 			currentBlockCount++
-
-		GoRetry:
-			if err = t.WriteMemory(addr+uint64(offset), buffer[:n]); err != nil {
-				if err == NACKError {
-					retryCount++
-					if retryCount >= WriteMaxRetryCount {
-						return fmt.Errorf("write addr 0x%02X fail", 0x08000000+offset)
-					}
-					goto GoRetry
+		GoRetry2:
+			if err = t.WriteMemory(addr+uint64(offset), buffer[:n], verify); err != nil {
+				retryCount++
+				if retryCount >= WriteMaxRetryCount {
+					return fmt.Errorf("write addr 0x%02X fail err:%s", 0x08000000+offset, err.Error())
 				}
-				return err
+				goto GoRetry2
 			}
+
 			offset += 256
 		}
 	}

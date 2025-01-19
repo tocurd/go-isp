@@ -30,4 +30,7 @@ type Interface interface {
 
 	// 将文件写入到flash内
 	WriteFile(addr uint64, path string, verify bool, progress func(float64)) error
+
+	// 读取flash数据
+	ReadMemory(addr uint64, size uint8) (data []byte, err error)
 }

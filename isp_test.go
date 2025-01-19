@@ -56,23 +56,23 @@ func TestISP_Main(t *testing.T) {
 	}
 	fmt.Printf("获取支持指令: %02X\r\n", isp.Supported)
 
-	// ===========================================
-	version, _, _, err := isp.GetVersion()
-	if err != nil {
-		panic(err)
-	}
-	fmt.Printf("获取版本号: %.1f\r\n", version)
-
-	// ===========================================
-	id, err := isp.GetID()
-	if err != nil {
-		panic(err)
-	}
-	fmt.Printf("获取芯片PID: 0x%08X\r\n", id)
+	// // ===========================================
+	// version, _, _, err := isp.GetVersion()
+	// if err != nil {
+	// 	panic(err)
+	// }
+	// fmt.Printf("获取版本号: %.1f\r\n", version)
+	//
+	// // ===========================================
+	// id, err := isp.GetID()
+	// if err != nil {
+	// 	panic(err)
+	// }
+	// fmt.Printf("获取芯片PID: 0x%08X\r\n", id)
 
 	// ===========================================
 	fmt.Println("准备擦除芯片")
-	if err = isp.ExtendedEraseMemory(); err != nil {
+	if err = isp.ExtendedEraseMemoryAll(); err != nil {
 		if err == NACKError {
 			if err = isp.ReadoutProtect(); err != nil {
 				if err == NACKError {
@@ -92,20 +92,25 @@ func TestISP_Main(t *testing.T) {
 
 	// ===========================================
 	fmt.Println("进入ISP模式")
-	if err := isp.Activation(); err != nil {
+	if err = isp.Activation(); err != nil {
 		panic(err)
 	}
 
 	// ===========================================
 	fmt.Println("开始波特率对码")
-	if err := isp.RightCode(); err != nil {
+	if err = isp.RightCode(); err != nil {
+		panic(err)
 	}
 
-	isp.WriteFile(0x08000000, "E:/JY_IAP.bin", false, func(progress float64) {
+	if err = isp.WriteFile(0x08000000, "E:/JY_F407VE_IAP_V1.0.15.hex", true, func(progress float64) {
 		fmt.Printf("progress:%.2f%%\r\n", progress)
-	})
-	// for index:=0;index<f.
-	// open.ReadAt()
+	}); err != nil {
+		panic(err)
+	}
+
+	if err := isp.Reset(); err != nil {
+		panic(err)
+	}
 
 	fmt.Println("任务完成")
 
